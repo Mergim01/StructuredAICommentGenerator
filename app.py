@@ -6,8 +6,10 @@ from llm_service import (
     get_dataframe_schema, 
     generate_transformation_code, 
     execute_transformation, 
-    generate_formatting_code
+    generate_formatting_code,
+    optimize_user_prompt
 )
+from history_manager import load_prompt_history, save_prompt_to_history
 
 # Page Config
 st.set_page_config(
@@ -122,13 +124,21 @@ def main():
         st.session_state.step1_code = None
     if "preview_step1_df" not in st.session_state:
         st.session_state.preview_step1_df = None
+    
+    # Load Prompt History from file
     if "prompt_history" not in st.session_state:
-        st.session_state.prompt_history = []
+        st.session_state.prompt_history = load_prompt_history()
         
     if "step2_code" not in st.session_state:
         st.session_state.step2_code = None
     if "preview_step2_df" not in st.session_state:
         st.session_state.preview_step2_df = None
+        
+    # Key for text area reset trick
+    if "prompt_key" not in st.session_state:
+        st.session_state.prompt_key = 0
+    if "current_prompt_value" not in st.session_state:
+        st.session_state.current_prompt_value = ""
 
     # Sidebar for Configuration
     with st.sidebar:
@@ -162,20 +172,48 @@ def main():
             index=0
         )
         
+        # Update current value if history selection changes
+        if selected_prompt and selected_prompt != st.session_state.current_prompt_value:
+            st.session_state.current_prompt_value = selected_prompt
+        
         user_prompt = st.text_area(
             "Transformation Instructions",
             height=100,
-            value=selected_prompt if selected_prompt else "",
+            value=st.session_state.current_prompt_value,
             placeholder="e.g. Rename 'Revenue' to 'Turnover', filter Region 'North'...",
-            key="source_prompt"
+            key=f"source_prompt_{st.session_state.prompt_key}" # Dynamic key for forcing reload
         )
+        
+        # Update state when user types manually
+        if user_prompt != st.session_state.current_prompt_value:
+             st.session_state.current_prompt_value = user_prompt
+
+        if uploaded_file:
+            if st.button("✨ Optimize Prompt", help="Uses AI to refine your instructions based on the uploaded file columns."):
+                if not user_prompt:
+                    st.warning("Please enter some instructions first.")
+                else:
+                    with st.spinner("Optimizing prompt..."):
+                        try:
+                            df_preview = pd.read_excel(uploaded_file, nrows=5) # Load schema only
+                            schema_info = get_dataframe_schema(df_preview)
+                            optimized = optimize_user_prompt(user_prompt, schema_info, api_key)
+                            
+                            # Update state and force rerender of text area by incrementing key
+                            st.session_state.current_prompt_value = optimized
+                            st.session_state.prompt_key += 1
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Optimization failed: {e}")
 
     if uploaded_file and user_prompt:
         # Button 1: Generate & Preview
         if st.button(f"Generate Code & Preview ({preview_rows} Rows)", type="primary"):
-            # Save to history if new
-            if user_prompt not in st.session_state.prompt_history:
-                st.session_state.prompt_history.append(user_prompt)
+            # Save to history (file and session)
+            if user_prompt and (not st.session_state.prompt_history or user_prompt != st.session_state.prompt_history[0]):
+                save_prompt_to_history(user_prompt)
+                # Refresh session state immediately to update dropdown on next rerun
+                st.session_state.prompt_history = load_prompt_history()
                 
             try:
                 with st.spinner(f"Analyzing schema and generating code..."):
@@ -198,13 +236,11 @@ def main():
         st.divider()
         st.subheader("Step 1: Preview & Code")
         
-        col_code, col_prev = st.columns([1, 1])
-        with col_code:
-            st.write("**Generated Python Code**")
-            st.code(st.session_state.step1_code, language="python")
-        with col_prev:
-            st.write(f"**Preview Result ({len(st.session_state.preview_step1_df)} rows)**")
-            st.dataframe(st.session_state.preview_step1_df)
+        st.write("**Generated Python Code**")
+        st.code(st.session_state.step1_code, language="python")
+        
+        st.write(f"**Preview Result ({len(st.session_state.preview_step1_df)} rows)**")
+        st.dataframe(st.session_state.preview_step1_df)
 
         st.info("If the preview looks correct, apply the transformation to the full dataset.")
         
@@ -272,13 +308,11 @@ def main():
             st.divider()
             st.subheader("Step 2: Preview & Code")
             
-            col_code2, col_prev2 = st.columns([1, 1])
-            with col_code2:
-                st.write("**Generated Python Code**")
-                st.code(st.session_state.step2_code, language="python")
-            with col_prev2:
-                st.write(f"**Preview Result ({len(st.session_state.preview_step2_df)} rows)**")
-                st.dataframe(st.session_state.preview_step2_df)
+            st.write("**Generated Python Code**")
+            st.code(st.session_state.step2_code, language="python")
+            
+            st.write(f"**Preview Result ({len(st.session_state.preview_step2_df)} rows)**")
+            st.dataframe(st.session_state.preview_step2_df)
             
             st.info("If the preview looks correct, apply to generate the final Excel.")
 

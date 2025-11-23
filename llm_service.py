@@ -151,6 +151,45 @@ def generate_formatting_code(source_schema: str, template_schema: str, user_prom
     except Exception as e:
         raise RuntimeError(f"Error communicating with Gemini API: {e}")
 
+def optimize_user_prompt(user_prompt: str, schema_info: str, api_key: str) -> str:
+    """
+    Optimizes the user prompt to be clearer and more precise for the LLM,
+    referencing specific columns from the schema if possible.
+    """
+    if not api_key:
+        raise ValueError("API Key is missing.")
+
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel(MODEL_NAME)
+
+    system_instruction = f"""
+    You are an expert Data Science Consultant. 
+    Your goal is to refine a User's rough instructions into a precise, unambiguous prompt for a Python coding LLM.
+    
+    INPUT SCHEMA (Columns available):
+    {schema_info}
+    
+    USER'S ROUGH INSTRUCTION:
+    "{user_prompt}"
+    
+    TASK:
+    Rewrite the user's instruction to be:
+    1. Clear and step-by-step.
+    2. Explicit about column names (match them to the schema).
+    3. Concise but complete.
+    4. DO NOT add conversational text. Just output the optimized prompt text.
+    """
+    
+    try:
+        response = model.generate_content(system_instruction)
+        if not response.text:
+            return user_prompt # Fallback
+        return response.text.strip()
+    except Exception as e:
+        # In case of error, return original prompt
+        print(f"Prompt optimization failed: {e}")
+        return user_prompt
+
 def execute_transformation(df: pd.DataFrame, code: str, func_name: str = "transform_data") -> pd.DataFrame:
     """
     Executes the generated code on the provided DataFrame safely.
