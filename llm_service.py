@@ -53,7 +53,7 @@ def generate_transformation_code(schema_info: str, user_prompt: str, api_key: st
     STRICT RULES:
     1. You MUST define a function `def transform_data(df):`.
     2. The function MUST return the modified DataFrame.
-    3. Use `import pandas as pd` or other standard libraries inside the function if needed.
+    3. Use `import pandas as pd` or other standard libraries INSIDE the function if needed.
     4. DO NOT include any explanation, introduction, or conclusion. RETURN ONLY THE CODE.
     5. Ensure the code is robust and handles potential type issues based on the schema.
     
@@ -165,6 +165,10 @@ def execute_transformation(df: pd.DataFrame, code: str, func_name: str = "transf
     """
     local_scope = {}
     
+    if func_name == "transform_data":
+        # For step 1, ensure imports are available in local scope if the LLM forgot them inside the function
+        local_scope['pd'] = pd
+        
     # 1. Define the function in a local scope
     try:
         exec(code, {}, local_scope)

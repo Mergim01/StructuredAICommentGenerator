@@ -16,36 +16,47 @@ st.set_page_config(
     layout="wide"
 )
 
-def run_safe_transformation(df, user_prompt, api_key, max_retries=3):
+def run_safe_transformation(df, user_prompt, api_key, preview_rows=None, max_retries=3, existing_code=None):
     """
     Attempts to generate and execute code with auto-correction loop.
+    If preview_rows is set, executes on that many rows.
+    If existing_code is provided, skips generation and uses it.
     """
     schema = get_dataframe_schema(df)
     last_error = None
-    generated_code = None
+    generated_code = existing_code
     
-    # Try initial generation
-    generated_code = generate_transformation_code(schema, user_prompt, api_key)
+    # Only generate if we don't have code yet
+    if not generated_code:
+        generated_code = generate_transformation_code(schema, user_prompt, api_key)
     
+    # Determine the working dataframe
+    working_df = df.head(preview_rows) if preview_rows else df
+    
+    # If we are reusing code (Full Run), we typically trust it, but we can still wrap in try/except
+    # If we are generating new code (Preview), we use the loop
+    
+    if existing_code:
+        # Direct execution without retry loop (assuming it was validated in preview)
+        # Or we could still retry if data issues appear on full set
+        try:
+             transformed_df = execute_transformation(working_df, generated_code)
+             return transformed_df, generated_code
+        except Exception as e:
+             raise RuntimeError(f"Execution of existing code failed: {e}")
+
+    # Generation Loop (Preview Mode)
     for attempt in range(max_retries + 1):
         try:
-            # Test on a small subset first (head) to catch errors quickly
-            # Use at least 5 rows, or all if less than 5
-            test_df = df.head(5).copy()
-            
-            # Execute on subset
-            execute_transformation(test_df, generated_code)
-            
-            # If successful on subset, run on full data
-            final_df = execute_transformation(df, generated_code)
-            return final_df, generated_code
+            # Test on subset (implicit if preview_rows is set)
+            transformed_df = execute_transformation(working_df, generated_code)
+            return transformed_df, generated_code
             
         except Exception as e:
             last_error = str(e)
             st.warning(f"Attempt {attempt + 1}/{max_retries + 1} failed. Retrying with auto-correction...")
             
             if attempt < max_retries:
-                # Generate fix
                 generated_code = generate_transformation_code(
                     schema, 
                     user_prompt, 
@@ -53,12 +64,11 @@ def run_safe_transformation(df, user_prompt, api_key, max_retries=3):
                     previous_code=generated_code, 
                     error_feedback=last_error
                 )
-                time.sleep(1) # Small delay
+                time.sleep(1)
             else:
-                # Out of retries
                 raise RuntimeError(f"Transformation failed after {max_retries} retries.\nLast Error: {last_error}")
 
-def run_safe_formatting(source_df, template_df, user_prompt, api_key, max_retries=3):
+def run_safe_formatting(source_df, template_df, user_prompt, api_key, preview_rows=None, max_retries=3, existing_code=None):
     """
     Attempts to generate and execute formatting code with auto-correction loop.
     """
@@ -66,28 +76,23 @@ def run_safe_formatting(source_df, template_df, user_prompt, api_key, max_retrie
     template_schema = get_dataframe_schema(template_df)
     
     last_error = None
-    generated_code = None
+    generated_code = existing_code
     
-    # Initial generation
-    generated_code = generate_formatting_code(source_schema, template_schema, user_prompt, api_key)
+    if not generated_code:
+        generated_code = generate_formatting_code(source_schema, template_schema, user_prompt, api_key)
     
+    working_df = source_df.head(preview_rows) if preview_rows else source_df
+    
+    if existing_code:
+        try:
+            final_df = execute_transformation(working_df, generated_code, func_name="format_data")
+            return final_df, generated_code
+        except Exception as e:
+            raise RuntimeError(f"Execution of existing code failed: {e}")
+
     for attempt in range(max_retries + 1):
         try:
-            # Test on subset
-            test_df = source_df.head(5).copy()
-            
-            execute_transformation(
-                test_df, 
-                generated_code, 
-                func_name="format_data"
-            )
-            
-            # Run on full data
-            final_df = execute_transformation(
-                source_df, 
-                generated_code, 
-                func_name="format_data"
-            )
+            final_df = execute_transformation(working_df, generated_code, func_name="format_data")
             return final_df, generated_code
             
         except Exception as e:
@@ -113,6 +118,17 @@ def main():
     # Initialize Session State
     if "step1_df" not in st.session_state:
         st.session_state.step1_df = None
+    if "step1_code" not in st.session_state:
+        st.session_state.step1_code = None
+    if "preview_step1_df" not in st.session_state:
+        st.session_state.preview_step1_df = None
+    if "prompt_history" not in st.session_state:
+        st.session_state.prompt_history = []
+        
+    if "step2_code" not in st.session_state:
+        st.session_state.step2_code = None
+    if "preview_step2_df" not in st.session_state:
+        st.session_state.preview_step2_df = None
 
     # Sidebar for Configuration
     with st.sidebar:
@@ -126,6 +142,10 @@ def main():
         except Exception:
             st.error("Secrets not found. Please create `.streamlit/secrets.toml`.")
             st.stop()
+        
+        st.divider()
+        st.header("Settings")
+        preview_rows = st.number_input("Preview Rows (Variable X)", min_value=1, value=5, step=1)
 
     # --- STEP 1: Initial Transformation ---
     st.header("Step 1: Data Cleaning & Logic")
@@ -134,38 +154,85 @@ def main():
     with col1:
         uploaded_file = st.file_uploader("Upload Source Excel (.xlsx)", type=["xlsx"], key="source_uploader")
     with col2:
+        # Prompt Selection
+        selected_prompt = st.selectbox(
+            "Select from History (Optional)",
+            [""] + st.session_state.prompt_history,
+            key="history_select",
+            index=0
+        )
+        
         user_prompt = st.text_area(
             "Transformation Instructions",
             height=100,
+            value=selected_prompt if selected_prompt else "",
             placeholder="e.g. Rename 'Revenue' to 'Turnover', filter Region 'North'...",
             key="source_prompt"
         )
 
     if uploaded_file and user_prompt:
-        if st.button("Run Step 1: Transform", type="primary"):
+        # Button 1: Generate & Preview
+        if st.button(f"Generate Code & Preview ({preview_rows} Rows)", type="primary"):
+            # Save to history if new
+            if user_prompt not in st.session_state.prompt_history:
+                st.session_state.prompt_history.append(user_prompt)
+                
             try:
-                with st.spinner("Processing Step 1..."):
+                with st.spinner(f"Analyzing schema and generating code..."):
                     df = pd.read_excel(uploaded_file)
+                    # Generate NEW code and preview
+                    transformed_preview, generated_code = run_safe_transformation(
+                        df, user_prompt, api_key, preview_rows=preview_rows
+                    )
+                    # Store in session state
+                    st.session_state.preview_step1_df = transformed_preview
+                    st.session_state.step1_code = generated_code
+                    # Reset full result if we regenerated code
+                    st.session_state.step1_df = None 
                     
-                    # Run safe transformation with retry loop
-                    transformed_df, final_code = run_safe_transformation(df, user_prompt, api_key)
-                    
-                    with st.expander("View Step 1 Final Code"):
-                        st.code(final_code, language="python")
-                    
-                    st.session_state.step1_df = transformed_df
-                    st.success("Step 1 Complete!")
             except Exception as e:
-                st.error(f"Error in Step 1: {e}")
+                st.error(f"Error in Generation: {e}")
 
-    # Display Step 1 Result if available
-    if st.session_state.step1_df is not None:
-        st.subheader("Step 1 Result Preview")
-        st.dataframe(st.session_state.step1_df.head())
-        
+    # Display Step 1 Preview and "Apply to All" Button
+    if st.session_state.preview_step1_df is not None and st.session_state.step1_code is not None:
         st.divider()
+        st.subheader("Step 1: Preview & Code")
         
-        # --- STEP 2: Template Formatting ---
+        col_code, col_prev = st.columns([1, 1])
+        with col_code:
+            st.write("**Generated Python Code**")
+            st.code(st.session_state.step1_code, language="python")
+        with col_prev:
+            st.write(f"**Preview Result ({len(st.session_state.preview_step1_df)} rows)**")
+            st.dataframe(st.session_state.preview_step1_df)
+
+        st.info("If the preview looks correct, apply the transformation to the full dataset.")
+        
+        if st.button("Apply to Full Dataset (Step 1)"):
+            try:
+                with st.spinner("Applying code to full dataset..."):
+                    df = pd.read_excel(uploaded_file) # Re-read full file
+                    # Execute EXISTING code on full data
+                    transformed_full, _ = run_safe_transformation(
+                        df, user_prompt, api_key, 
+                        preview_rows=None, 
+                        existing_code=st.session_state.step1_code
+                    )
+                    st.session_state.step1_df = transformed_full
+                    st.success(f"Step 1 Full Transformation Complete! (Total rows: {len(transformed_full)})")
+                    st.session_state.show_step1_final_preview = True
+                    st.rerun() # Rerun to show Step 2
+            except Exception as e:
+                st.error(f"Error applying to full dataset: {e}")
+
+    # Display Final Preview for Step 1 (after rerun)
+    if st.session_state.get("show_step1_final_preview") and st.session_state.step1_df is not None:
+        st.subheader("Data Preview (First 10 rows)")
+        st.dataframe(st.session_state.step1_df.head(10))
+
+    # --- STEP 2: Template Formatting (Only if Step 1 is fully done) ---
+    if st.session_state.step1_df is not None:
+        st.divider()
         st.header("Step 2: Template Formatting")
         st.markdown("Upload a template Excel file and describe how to map the data from Step 1 into this structure.")
         
@@ -181,31 +248,62 @@ def main():
             )
             
         if template_file and format_prompt:
-            if st.button("Run Step 2: Apply Template"):
+            # Button: Generate & Preview Step 2
+            if st.button(f"Generate Step 2 Code & Preview ({preview_rows} Rows)", type="primary"):
                 try:
-                    with st.spinner("Processing Step 2..."):
+                    with st.spinner("Generating Step 2 code..."):
                         template_df = pd.read_excel(template_file)
                         
-                        # Run safe formatting with retry loop
-                        final_df, final_format_code = run_safe_formatting(
+                        final_preview, generated_code_2 = run_safe_formatting(
                             st.session_state.step1_df, 
                             template_df, 
                             format_prompt, 
-                            api_key
+                            api_key,
+                            preview_rows=preview_rows
+                        )
+                        st.session_state.preview_step2_df = final_preview
+                        st.session_state.step2_code = generated_code_2
+                        
+                except Exception as e:
+                    st.error(f"Error in Step 2 Generation: {e}")
+
+        # Display Step 2 Preview and "Apply to All" Button
+        if st.session_state.preview_step2_df is not None and st.session_state.step2_code is not None:
+            st.divider()
+            st.subheader("Step 2: Preview & Code")
+            
+            col_code2, col_prev2 = st.columns([1, 1])
+            with col_code2:
+                st.write("**Generated Python Code**")
+                st.code(st.session_state.step2_code, language="python")
+            with col_prev2:
+                st.write(f"**Preview Result ({len(st.session_state.preview_step2_df)} rows)**")
+                st.dataframe(st.session_state.preview_step2_df)
+            
+            st.info("If the preview looks correct, apply to generate the final Excel.")
+
+            if st.button("Apply to Full Dataset (Step 2) & Download"):
+                try:
+                    with st.spinner("Applying Step 2 to full dataset..."):
+                        template_df = pd.read_excel(template_file)
+                        
+                        final_full, _ = run_safe_formatting(
+                            st.session_state.step1_df, 
+                            template_df, 
+                            format_prompt, 
+                            api_key,
+                            preview_rows=None,
+                            existing_code=st.session_state.step2_code
                         )
                         
-                        with st.expander("View Step 2 Final Code"):
-                            st.code(final_format_code, language="python")
-                        
-                        st.success("Step 2 Complete!")
-                        
-                        st.subheader("Final Result Preview")
-                        st.dataframe(final_df.head())
+                        st.success(f"Process Complete! (Total rows: {len(final_full)})")
+                        st.subheader("Final Result Preview (First 10 rows)")
+                        st.dataframe(final_full.head(10))
                         
                         # Download
                         buffer = io.BytesIO()
                         with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                            final_df.to_excel(writer, index=False)
+                            final_full.to_excel(writer, index=False)
                         
                         st.download_button(
                             label="Download Final Excel",
@@ -215,7 +313,7 @@ def main():
                         )
                         
                 except Exception as e:
-                    st.error(f"Error in Step 2: {e}")
+                    st.error(f"Error in Step 2 Full Run: {e}")
 
 if __name__ == "__main__":
     main()
