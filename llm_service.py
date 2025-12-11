@@ -2,8 +2,15 @@ import google.generativeai as genai
 import pandas as pd
 import re
 import traceback
+import os
+import openai
+from openai import AzureOpenAI
 
-MODEL_NAME = "gemini-2.0-flash"
+# Default Constants
+DEFAULT_GOOGLE_MODEL = "gemini-2.0-flash"
+DEFAULT_AZURE_MODEL = "gpt-4.1" # Default company model
+AZURE_BASE_URL = "https://api.competence-cente-cc-genai-prod.enbw-az.cloud/openai"
+AZURE_API_VERSION = "2024-10-21"
 
 def get_dataframe_schema(df: pd.DataFrame) -> str:
     """
@@ -25,27 +32,64 @@ def clean_code_block(code: str) -> str:
         return match.group(1).strip()
     return code.strip()
 
-def generate_transformation_code(schema_info: str, user_prompt: str, api_key: str, previous_code: str = None, error_feedback: str = None) -> str:
+def call_llm(prompt: str, llm_config: dict) -> str:
     """
-    Generates Python code using Google Gemini based on the schema and user prompt.
+    Unified function to call different LLM providers.
+    """
+    provider = llm_config.get("provider", "google")
+    api_key = llm_config.get("api_key")
+    model_name = llm_config.get("model_name")
+    
+    if provider == "azure":
+        if not api_key:
+             raise ValueError("API Key is missing for Azure provider.")
+             
+        client = openai.AzureOpenAI(
+            base_url=llm_config.get("base_url", AZURE_BASE_URL),
+            api_key=api_key,
+            api_version=llm_config.get("api_version", AZURE_API_VERSION)
+        )
+        try:
+            completion = client.chat.completions.create(
+                model=model_name or DEFAULT_AZURE_MODEL,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            return completion.choices[0].message.content
+        except Exception as e:
+            raise RuntimeError(f"Error communicating with Azure OpenAI: {e}")
+
+    elif provider == "google":
+        if not api_key:
+             raise ValueError("API Key is missing for Google provider.")
+        
+        try:
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel(model_name or DEFAULT_GOOGLE_MODEL)
+            response = model.generate_content(prompt)
+            if not response.text:
+                raise RuntimeError("Empty response received from Gemini.")
+            return response.text
+        except Exception as e:
+             raise RuntimeError(f"Error communicating with Gemini API: {e}")
+        
+    else:
+        raise ValueError(f"Unknown provider: {provider}")
+
+def generate_transformation_code(schema_info: str, user_prompt: str, llm_config: dict, previous_code: str = None, error_feedback: str = None) -> str:
+    """
+    Generates Python code using the selected LLM based on the schema and user prompt.
     Can also fix code based on previous error feedback.
     
     Args:
         schema_info: String representation of the DataFrame schema.
         user_prompt: The user's instructions for transformation.
-        api_key: The Google API key.
+        llm_config: Dictionary containing LLM configuration (provider, api_key, model_name).
         previous_code: The code that failed (optional).
         error_feedback: The error message from the previous attempt (optional).
         
     Returns:
         String containing the generated Python code.
     """
-    if not api_key:
-        raise ValueError("API Key is missing. Please configure it in .streamlit/secrets.toml.")
-
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(MODEL_NAME)
-
     system_instruction = f"""
     You are an expert Python Data Scientist specializing in Pandas.
     Your task is to write a Python function named `transform_data` that takes a pandas DataFrame `df` as input and returns a transformed DataFrame.
@@ -77,36 +121,25 @@ def generate_transformation_code(schema_info: str, user_prompt: str, api_key: st
         Fix the code based on the error feedback. Pay close attention to column names and data types.
         """
     
-    try:
-        response = model.generate_content(system_instruction)
-        if not response.text:
-            raise RuntimeError("Empty response received from Gemini.")
-        return clean_code_block(response.text)
-    except Exception as e:
-        raise RuntimeError(f"Error communicating with Gemini API: {e}")
+    response_text = call_llm(system_instruction, llm_config)
+    return clean_code_block(response_text)
 
-def generate_formatting_code(source_schema: str, template_schema: str, user_prompt: str, api_key: str, previous_code: str = None, error_feedback: str = None) -> str:
+def generate_formatting_code(source_schema: str, template_schema: str, user_prompt: str, llm_config: dict, previous_code: str = None, error_feedback: str = None) -> str:
     """
-    Generates Python code using Google Gemini to format the dataframe according to a template.
+    Generates Python code using the selected LLM to format the dataframe according to a template.
     Can also fix code based on previous error feedback.
     
     Args:
         source_schema: String representation of the source DataFrame schema.
         template_schema: String representation of the template DataFrame schema.
         user_prompt: The user's instructions for formatting.
-        api_key: The Google API key.
+        llm_config: Dictionary containing LLM configuration.
         previous_code: The code that failed (optional).
         error_feedback: The error message from the previous attempt (optional).
         
     Returns:
         String containing the generated Python code with a function `format_data(df)`.
     """
-    if not api_key:
-        raise ValueError("API Key is missing.")
-
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(MODEL_NAME)
-
     system_instruction = f"""
     You are an expert Python Data Scientist.
     Your task is to write a Python function named `format_data` that takes a pandas DataFrame `df` as input and returns a NEW DataFrame that matches the structure of the TEMPLATE.
@@ -143,25 +176,14 @@ def generate_formatting_code(source_schema: str, template_schema: str, user_prom
         Fix the code based on the error feedback. Pay close attention to column names.
         """
     
-    try:
-        response = model.generate_content(system_instruction)
-        if not response.text:
-            raise RuntimeError("Empty response received from Gemini.")
-        return clean_code_block(response.text)
-    except Exception as e:
-        raise RuntimeError(f"Error communicating with Gemini API: {e}")
+    response_text = call_llm(system_instruction, llm_config)
+    return clean_code_block(response_text)
 
-def optimize_user_prompt(user_prompt: str, schema_info: str, api_key: str) -> str:
+def optimize_user_prompt(user_prompt: str, schema_info: str, llm_config: dict) -> str:
     """
     Optimizes the user prompt to be clearer and more precise for the LLM,
     referencing specific columns from the schema if possible.
     """
-    if not api_key:
-        raise ValueError("API Key is missing.")
-
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(MODEL_NAME)
-
     system_instruction = f"""
     You are an expert Data Science Consultant. 
     Your goal is to refine a User's rough instructions into a precise, unambiguous prompt for a Python coding LLM.
@@ -181,10 +203,8 @@ def optimize_user_prompt(user_prompt: str, schema_info: str, api_key: str) -> st
     """
     
     try:
-        response = model.generate_content(system_instruction)
-        if not response.text:
-            return user_prompt # Fallback
-        return response.text.strip()
+        response_text = call_llm(system_instruction, llm_config)
+        return response_text.strip()
     except Exception as e:
         # In case of error, return original prompt
         print(f"Prompt optimization failed: {e}")

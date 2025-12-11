@@ -27,3 +27,4 @@ def save_prompt_to_history(prompt: str):
         except Exception as e:
             print(f"Error saving history: {e}")
 
+

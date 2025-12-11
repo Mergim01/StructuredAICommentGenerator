@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 import io
 import time
+import os
+from dotenv import load_dotenv
 from llm_service import (
     get_dataframe_schema, 
     generate_transformation_code, 
@@ -11,6 +13,9 @@ from llm_service import (
 )
 from history_manager import load_prompt_history, save_prompt_to_history
 
+# Load environment variables
+load_dotenv()
+
 # Page Config
 st.set_page_config(
     page_title="Automated Excel Transformation",
@@ -18,7 +23,7 @@ st.set_page_config(
     layout="wide"
 )
 
-def run_safe_transformation(df, user_prompt, api_key, preview_rows=None, max_retries=3, existing_code=None):
+def run_safe_transformation(df, user_prompt, llm_config, preview_rows=None, max_retries=3, existing_code=None):
     """
     Attempts to generate and execute code with auto-correction loop.
     If preview_rows is set, executes on that many rows.
@@ -30,7 +35,7 @@ def run_safe_transformation(df, user_prompt, api_key, preview_rows=None, max_ret
     
     # Only generate if we don't have code yet
     if not generated_code:
-        generated_code = generate_transformation_code(schema, user_prompt, api_key)
+        generated_code = generate_transformation_code(schema, user_prompt, llm_config)
     
     # Determine the working dataframe
     working_df = df.head(preview_rows) if preview_rows else df
@@ -62,7 +67,7 @@ def run_safe_transformation(df, user_prompt, api_key, preview_rows=None, max_ret
                 generated_code = generate_transformation_code(
                     schema, 
                     user_prompt, 
-                    api_key, 
+                    llm_config, 
                     previous_code=generated_code, 
                     error_feedback=last_error
                 )
@@ -70,7 +75,7 @@ def run_safe_transformation(df, user_prompt, api_key, preview_rows=None, max_ret
             else:
                 raise RuntimeError(f"Transformation failed after {max_retries} retries.\nLast Error: {last_error}")
 
-def run_safe_formatting(source_df, template_df, user_prompt, api_key, preview_rows=None, max_retries=3, existing_code=None):
+def run_safe_formatting(source_df, template_df, user_prompt, llm_config, preview_rows=None, max_retries=3, existing_code=None):
     """
     Attempts to generate and execute formatting code with auto-correction loop.
     """
@@ -81,7 +86,7 @@ def run_safe_formatting(source_df, template_df, user_prompt, api_key, preview_ro
     generated_code = existing_code
     
     if not generated_code:
-        generated_code = generate_formatting_code(source_schema, template_schema, user_prompt, api_key)
+        generated_code = generate_formatting_code(source_schema, template_schema, user_prompt, llm_config)
     
     working_df = source_df.head(preview_rows) if preview_rows else source_df
     
@@ -106,7 +111,7 @@ def run_safe_formatting(source_df, template_df, user_prompt, api_key, preview_ro
                     source_schema, 
                     template_schema, 
                     user_prompt, 
-                    api_key,
+                    llm_config,
                     previous_code=generated_code,
                     error_feedback=last_error
                 )
@@ -143,15 +148,66 @@ def main():
     # Sidebar for Configuration
     with st.sidebar:
         st.header("Configuration")
-        try:
-            api_key = st.secrets["google"]["api_key"]
-            if api_key == "YOUR_GOOGLE_API_KEY_HERE":
-                st.warning("Please configure your Google API Key in `.streamlit/secrets.toml`.")
-                st.stop()
-            st.success("API Key loaded.")
-        except Exception:
-            st.error("Secrets not found. Please create `.streamlit/secrets.toml`.")
-            st.stop()
+        
+        # LLM Selection
+        llm_provider = st.selectbox(
+            "LLM Provider",
+            ["Company Internal (Azure OpenAI)", "Google Gemini"],
+            index=0
+        )
+        
+        llm_config = {}
+        
+        if llm_provider == "Company Internal (Azure OpenAI)":
+            llm_config["provider"] = "azure"
+            llm_config["base_url"] = "https://api.competence-cente-cc-genai-prod.enbw-az.cloud/openai"
+            llm_config["api_version"] = "2024-10-21"
+            
+            # Model Selection
+            model_options = ["gpt-4.1", "gpt-5", "gpt-5-mini"]
+            selected_model = st.selectbox("Select Model", model_options, index=0)
+            llm_config["model_name"] = selected_model
+            
+            # API Key
+            # Check environment variable first (as requested by user), then secrets
+            api_key = os.environ.get("api_key")
+            if not api_key:
+                 try:
+                     api_key = st.secrets["azure"]["api_key"]
+                 except:
+                     pass
+            
+            if not api_key:
+                api_key = st.text_input("Enter Azure API Key", type="password")
+            
+            if not api_key:
+                 st.warning("Please set `api_key` in .env or secrets.")
+                 st.stop()
+            else:
+                 llm_config["api_key"] = api_key
+                 st.success("Azure API Key loaded.")
+
+        else: # Google Gemini
+            llm_config["provider"] = "google"
+            llm_config["model_name"] = "gemini-2.0-flash"
+            
+            # Try to get key from env or secrets
+            api_key = os.environ.get("GOOGLE_API_KEY")
+            if not api_key:
+                try:
+                    api_key = st.secrets["google"]["api_key"]
+                except:
+                    pass
+            
+            if not api_key or api_key == "YOUR_GOOGLE_API_KEY_HERE":
+                 api_key = st.text_input("Enter Google API Key", type="password")
+            
+            if not api_key:
+                 st.warning("Please configure Google API Key.")
+                 st.stop()
+            else:
+                 llm_config["api_key"] = api_key
+                 st.success("Google API Key loaded.")
         
         st.divider()
         st.header("Settings")
@@ -197,7 +253,7 @@ def main():
                         try:
                             df_preview = pd.read_excel(uploaded_file, nrows=5) # Load schema only
                             schema_info = get_dataframe_schema(df_preview)
-                            optimized = optimize_user_prompt(user_prompt, schema_info, api_key)
+                            optimized = optimize_user_prompt(user_prompt, schema_info, llm_config)
                             
                             # Update state and force rerender of text area by incrementing key
                             st.session_state.current_prompt_value = optimized
@@ -220,7 +276,7 @@ def main():
                     df = pd.read_excel(uploaded_file)
                     # Generate NEW code and preview
                     transformed_preview, generated_code = run_safe_transformation(
-                        df, user_prompt, api_key, preview_rows=preview_rows
+                        df, user_prompt, llm_config, preview_rows=preview_rows
                     )
                     # Store in session state
                     st.session_state.preview_step1_df = transformed_preview
@@ -250,7 +306,7 @@ def main():
                     df = pd.read_excel(uploaded_file) # Re-read full file
                     # Execute EXISTING code on full data
                     transformed_full, _ = run_safe_transformation(
-                        df, user_prompt, api_key, 
+                        df, user_prompt, llm_config, 
                         preview_rows=None, 
                         existing_code=st.session_state.step1_code
                     )
@@ -294,7 +350,7 @@ def main():
                             st.session_state.step1_df, 
                             template_df, 
                             format_prompt, 
-                            api_key,
+                            llm_config,
                             preview_rows=preview_rows
                         )
                         st.session_state.preview_step2_df = final_preview
@@ -325,7 +381,7 @@ def main():
                             st.session_state.step1_df, 
                             template_df, 
                             format_prompt, 
-                            api_key,
+                            llm_config,
                             preview_rows=None,
                             existing_code=st.session_state.step2_code
                         )
