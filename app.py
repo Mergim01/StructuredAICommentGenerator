@@ -2,19 +2,12 @@ import streamlit as st
 import pandas as pd
 import io
 import time
-import os
-from dotenv import load_dotenv
 from llm_service import (
     get_dataframe_schema, 
     generate_transformation_code, 
     execute_transformation, 
-    generate_formatting_code,
-    optimize_user_prompt
+    generate_formatting_code
 )
-from history_manager import load_prompt_history, save_prompt_to_history
-
-# Load environment variables
-load_dotenv()
 
 # Page Config
 st.set_page_config(
@@ -23,7 +16,7 @@ st.set_page_config(
     layout="wide"
 )
 
-def run_safe_transformation(df, user_prompt, llm_config, preview_rows=None, max_retries=3, existing_code=None):
+def run_safe_transformation(df, user_prompt, api_key, preview_rows=None, max_retries=3, existing_code=None):
     """
     Attempts to generate and execute code with auto-correction loop.
     If preview_rows is set, executes on that many rows.
@@ -35,7 +28,7 @@ def run_safe_transformation(df, user_prompt, llm_config, preview_rows=None, max_
     
     # Only generate if we don't have code yet
     if not generated_code:
-        generated_code = generate_transformation_code(schema, user_prompt, llm_config)
+        generated_code = generate_transformation_code(schema, user_prompt, api_key)
     
     # Determine the working dataframe
     working_df = df.head(preview_rows) if preview_rows else df
@@ -67,7 +60,7 @@ def run_safe_transformation(df, user_prompt, llm_config, preview_rows=None, max_
                 generated_code = generate_transformation_code(
                     schema, 
                     user_prompt, 
-                    llm_config, 
+                    api_key, 
                     previous_code=generated_code, 
                     error_feedback=last_error
                 )
@@ -75,7 +68,7 @@ def run_safe_transformation(df, user_prompt, llm_config, preview_rows=None, max_
             else:
                 raise RuntimeError(f"Transformation failed after {max_retries} retries.\nLast Error: {last_error}")
 
-def run_safe_formatting(source_df, template_df, user_prompt, llm_config, preview_rows=None, max_retries=3, existing_code=None):
+def run_safe_formatting(source_df, template_df, user_prompt, api_key, preview_rows=None, max_retries=3, existing_code=None):
     """
     Attempts to generate and execute formatting code with auto-correction loop.
     """
@@ -86,7 +79,7 @@ def run_safe_formatting(source_df, template_df, user_prompt, llm_config, preview
     generated_code = existing_code
     
     if not generated_code:
-        generated_code = generate_formatting_code(source_schema, template_schema, user_prompt, llm_config)
+        generated_code = generate_formatting_code(source_schema, template_schema, user_prompt, api_key)
     
     working_df = source_df.head(preview_rows) if preview_rows else source_df
     
@@ -111,7 +104,7 @@ def run_safe_formatting(source_df, template_df, user_prompt, llm_config, preview
                     source_schema, 
                     template_schema, 
                     user_prompt, 
-                    llm_config,
+                    api_key,
                     previous_code=generated_code,
                     error_feedback=last_error
                 )
@@ -129,85 +122,26 @@ def main():
         st.session_state.step1_code = None
     if "preview_step1_df" not in st.session_state:
         st.session_state.preview_step1_df = None
-    
-    # Load Prompt History from file
     if "prompt_history" not in st.session_state:
-        st.session_state.prompt_history = load_prompt_history()
+        st.session_state.prompt_history = []
         
     if "step2_code" not in st.session_state:
         st.session_state.step2_code = None
     if "preview_step2_df" not in st.session_state:
         st.session_state.preview_step2_df = None
-        
-    # Key for text area reset trick
-    if "prompt_key" not in st.session_state:
-        st.session_state.prompt_key = 0
-    if "current_prompt_value" not in st.session_state:
-        st.session_state.current_prompt_value = ""
 
     # Sidebar for Configuration
     with st.sidebar:
         st.header("Configuration")
-        
-        # LLM Selection
-        llm_provider = st.selectbox(
-            "LLM Provider",
-            ["Company Internal (Azure OpenAI)", "Google Gemini"],
-            index=0
-        )
-        
-        llm_config = {}
-        
-        if llm_provider == "Company Internal (Azure OpenAI)":
-            llm_config["provider"] = "azure"
-            llm_config["base_url"] = "https://api.competence-cente-cc-genai-prod.enbw-az.cloud/openai"
-            llm_config["api_version"] = "2024-10-21"
-            
-            # Model Selection
-            model_options = ["gpt-4.1", "gpt-5", "gpt-5-mini"]
-            selected_model = st.selectbox("Select Model", model_options, index=0)
-            llm_config["model_name"] = selected_model
-            
-            # API Key
-            # Check environment variable first (as requested by user), then secrets
-            api_key = os.environ.get("api_key")
-            if not api_key:
-                 try:
-                     api_key = st.secrets["azure"]["api_key"]
-                 except:
-                     pass
-            
-            if not api_key:
-                api_key = st.text_input("Enter Azure API Key", type="password")
-            
-            if not api_key:
-                 st.warning("Please set `api_key` in .env or secrets.")
-                 st.stop()
-            else:
-                 llm_config["api_key"] = api_key
-                 st.success("Azure API Key loaded.")
-
-        else: # Google Gemini
-            llm_config["provider"] = "google"
-            llm_config["model_name"] = "gemini-2.0-flash"
-            
-            # Try to get key from env or secrets
-            api_key = os.environ.get("GOOGLE_API_KEY")
-            if not api_key:
-                try:
-                    api_key = st.secrets["google"]["api_key"]
-                except:
-                    pass
-            
-            if not api_key or api_key == "YOUR_GOOGLE_API_KEY_HERE":
-                 api_key = st.text_input("Enter Google API Key", type="password")
-            
-            if not api_key:
-                 st.warning("Please configure Google API Key.")
-                 st.stop()
-            else:
-                 llm_config["api_key"] = api_key
-                 st.success("Google API Key loaded.")
+        try:
+            api_key = st.secrets["google"]["api_key"]
+            if api_key == "YOUR_GOOGLE_API_KEY_HERE":
+                st.warning("Please configure your Google API Key in `.streamlit/secrets.toml`.")
+                st.stop()
+            st.success("API Key loaded.")
+        except Exception:
+            st.error("Secrets not found. Please create `.streamlit/secrets.toml`.")
+            st.stop()
         
         st.divider()
         st.header("Settings")
@@ -228,55 +162,27 @@ def main():
             index=0
         )
         
-        # Update current value if history selection changes
-        if selected_prompt and selected_prompt != st.session_state.current_prompt_value:
-            st.session_state.current_prompt_value = selected_prompt
-        
         user_prompt = st.text_area(
             "Transformation Instructions",
             height=100,
-            value=st.session_state.current_prompt_value,
+            value=selected_prompt if selected_prompt else "",
             placeholder="e.g. Rename 'Revenue' to 'Turnover', filter Region 'North'...",
-            key=f"source_prompt_{st.session_state.prompt_key}" # Dynamic key for forcing reload
+            key="source_prompt"
         )
-        
-        # Update state when user types manually
-        if user_prompt != st.session_state.current_prompt_value:
-             st.session_state.current_prompt_value = user_prompt
-
-        if uploaded_file:
-            if st.button("✨ Optimize Prompt", help="Uses AI to refine your instructions based on the uploaded file columns."):
-                if not user_prompt:
-                    st.warning("Please enter some instructions first.")
-                else:
-                    with st.spinner("Optimizing prompt..."):
-                        try:
-                            df_preview = pd.read_excel(uploaded_file, nrows=5) # Load schema only
-                            schema_info = get_dataframe_schema(df_preview)
-                            optimized = optimize_user_prompt(user_prompt, schema_info, llm_config)
-                            
-                            # Update state and force rerender of text area by incrementing key
-                            st.session_state.current_prompt_value = optimized
-                            st.session_state.prompt_key += 1
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Optimization failed: {e}")
 
     if uploaded_file and user_prompt:
         # Button 1: Generate & Preview
         if st.button(f"Generate Code & Preview ({preview_rows} Rows)", type="primary"):
-            # Save to history (file and session)
-            if user_prompt and (not st.session_state.prompt_history or user_prompt != st.session_state.prompt_history[0]):
-                save_prompt_to_history(user_prompt)
-                # Refresh session state immediately to update dropdown on next rerun
-                st.session_state.prompt_history = load_prompt_history()
+            # Save to history if new
+            if user_prompt not in st.session_state.prompt_history:
+                st.session_state.prompt_history.append(user_prompt)
                 
             try:
                 with st.spinner(f"Analyzing schema and generating code..."):
                     df = pd.read_excel(uploaded_file)
                     # Generate NEW code and preview
                     transformed_preview, generated_code = run_safe_transformation(
-                        df, user_prompt, llm_config, preview_rows=preview_rows
+                        df, user_prompt, api_key, preview_rows=preview_rows
                     )
                     # Store in session state
                     st.session_state.preview_step1_df = transformed_preview
@@ -292,11 +198,13 @@ def main():
         st.divider()
         st.subheader("Step 1: Preview & Code")
         
-        st.write("**Generated Python Code**")
-        st.code(st.session_state.step1_code, language="python")
-        
-        st.write(f"**Preview Result ({len(st.session_state.preview_step1_df)} rows)**")
-        st.dataframe(st.session_state.preview_step1_df)
+        col_code, col_prev = st.columns([1, 1])
+        with col_code:
+            st.write("**Generated Python Code**")
+            st.code(st.session_state.step1_code, language="python")
+        with col_prev:
+            st.write(f"**Preview Result ({len(st.session_state.preview_step1_df)} rows)**")
+            st.dataframe(st.session_state.preview_step1_df)
 
         st.info("If the preview looks correct, apply the transformation to the full dataset.")
         
@@ -306,7 +214,7 @@ def main():
                     df = pd.read_excel(uploaded_file) # Re-read full file
                     # Execute EXISTING code on full data
                     transformed_full, _ = run_safe_transformation(
-                        df, user_prompt, llm_config, 
+                        df, user_prompt, api_key, 
                         preview_rows=None, 
                         existing_code=st.session_state.step1_code
                     )
@@ -350,7 +258,7 @@ def main():
                             st.session_state.step1_df, 
                             template_df, 
                             format_prompt, 
-                            llm_config,
+                            api_key,
                             preview_rows=preview_rows
                         )
                         st.session_state.preview_step2_df = final_preview
@@ -364,11 +272,13 @@ def main():
             st.divider()
             st.subheader("Step 2: Preview & Code")
             
-            st.write("**Generated Python Code**")
-            st.code(st.session_state.step2_code, language="python")
-            
-            st.write(f"**Preview Result ({len(st.session_state.preview_step2_df)} rows)**")
-            st.dataframe(st.session_state.preview_step2_df)
+            col_code2, col_prev2 = st.columns([1, 1])
+            with col_code2:
+                st.write("**Generated Python Code**")
+                st.code(st.session_state.step2_code, language="python")
+            with col_prev2:
+                st.write(f"**Preview Result ({len(st.session_state.preview_step2_df)} rows)**")
+                st.dataframe(st.session_state.preview_step2_df)
             
             st.info("If the preview looks correct, apply to generate the final Excel.")
 
@@ -381,7 +291,7 @@ def main():
                             st.session_state.step1_df, 
                             template_df, 
                             format_prompt, 
-                            llm_config,
+                            api_key,
                             preview_rows=None,
                             existing_code=st.session_state.step2_code
                         )
