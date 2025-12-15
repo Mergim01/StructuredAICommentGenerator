@@ -3,4 +3,5 @@ pandas
 openpyxl
 xlsxwriter
 google-generativeai
-
+openai
+python-dotenv
