@@ -220,18 +220,6 @@ def main():
     with col1:
         uploaded_file = st.file_uploader("Upload Source Excel (.xlsx)", type=["xlsx"], key="source_uploader")
     with col2:
-        # Prompt Selection
-        selected_prompt = st.selectbox(
-            "Select from History (Optional)",
-            [""] + st.session_state.prompt_history,
-            key="history_select",
-            index=0
-        )
-        
-        # Update current value if history selection changes
-        if selected_prompt and selected_prompt != st.session_state.current_prompt_value:
-            st.session_state.current_prompt_value = selected_prompt
-        
         user_prompt = st.text_area(
             "Transformation Instructions",
             height=100,
@@ -321,6 +309,18 @@ def main():
     if st.session_state.get("show_step1_final_preview") and st.session_state.step1_df is not None:
         st.subheader("Data Preview (First 10 rows)")
         st.dataframe(st.session_state.step1_df.head(10))
+
+        # Download Button for Step 1
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+            st.session_state.step1_df.to_excel(writer, index=False)
+        
+        st.download_button(
+            label="Download Step 1 Excel",
+            data=buffer.getvalue(),
+            file_name="step1_result.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
     # --- STEP 2: Template Formatting (Only if Step 1 is fully done) ---
     if st.session_state.step1_df is not None:
