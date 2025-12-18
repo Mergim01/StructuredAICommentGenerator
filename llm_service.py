@@ -52,7 +52,8 @@ def call_llm(prompt: str, llm_config: dict) -> str:
         try:
             completion = client.chat.completions.create(
                 model=model_name or DEFAULT_AZURE_MODEL,
-                messages=[{"role": "user", "content": prompt}]
+                messages=[{"role": "user", "content": prompt}],
+                temperature=llm_config.get("temperature", 0.0)
             )
             return completion.choices[0].message.content
         except Exception as e:
@@ -65,7 +66,12 @@ def call_llm(prompt: str, llm_config: dict) -> str:
         try:
             genai.configure(api_key=api_key)
             model = genai.GenerativeModel(model_name or DEFAULT_GOOGLE_MODEL)
-            response = model.generate_content(prompt)
+            response = model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=llm_config.get("temperature", 0.0)
+                )
+            )
             if not response.text:
                 raise RuntimeError("Empty response received from Gemini.")
             return response.text

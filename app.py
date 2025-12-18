@@ -211,6 +211,8 @@ def main():
         
         st.divider()
         st.header("Settings")
+        temperature = st.slider("Temperature", min_value=0.0, max_value=1.0, value=0.0, step=0.1)
+        llm_config["temperature"] = temperature
         preview_rows = st.number_input("Preview Rows (Variable X)", min_value=1, value=5, step=1)
 
     # --- STEP 1: Initial Transformation ---
