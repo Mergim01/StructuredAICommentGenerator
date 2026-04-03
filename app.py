@@ -151,7 +151,7 @@ def main():
         
         llm_config = {
             "provider": "google",
-            "model_name": "gemini-2.0-flash"
+            "model_name": "gemini-2.5-flash"
         }
 
         # Try to get key from env or secrets

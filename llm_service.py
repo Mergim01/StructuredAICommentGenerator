@@ -4,7 +4,7 @@ import re
 import traceback
 
 # Default Constants
-DEFAULT_GOOGLE_MODEL = "gemini-2.0-flash"
+DEFAULT_GOOGLE_MODEL = "gemini-2.5-flash"
 
 def get_dataframe_schema(df: pd.DataFrame) -> str:
     """
