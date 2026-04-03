@@ -122,6 +122,9 @@ def run_safe_formatting(source_df, template_df, user_prompt, llm_config, preview
 def main():
     st.title("📊 Automated Excel Transformation Tool")
     
+    def sync_source_prompt():
+        st.session_state.current_prompt_value = st.session_state.source_prompt
+    
     # Initialize Session State
     if "step1_df" not in st.session_state:
         st.session_state.step1_df = None
@@ -144,6 +147,8 @@ def main():
         st.session_state.prompt_key = 0
     if "current_prompt_value" not in st.session_state:
         st.session_state.current_prompt_value = ""
+    if "source_prompt" not in st.session_state:
+        st.session_state.source_prompt = st.session_state.current_prompt_value
 
     # Sidebar for Configuration
     with st.sidebar:
@@ -188,9 +193,9 @@ def main():
         user_prompt = st.text_area(
             "Transformation Instructions",
             height=100,
-            value=st.session_state.current_prompt_value,
             placeholder="e.g. Rename 'Revenue' to 'Turnover', filter Region 'North'...",
-            key=f"source_prompt_{st.session_state.prompt_key}" # Dynamic key for forcing reload
+            key="source_prompt",
+            on_change=sync_source_prompt
         )
         
         # Update state when user types manually
@@ -210,7 +215,7 @@ def main():
                             
                             # Update state and force rerender of text area by incrementing key
                             st.session_state.current_prompt_value = optimized
-                            st.session_state.prompt_key += 1
+                            st.session_state.source_prompt = optimized
                             st.rerun()
                         except Exception as e:
                             st.error(f"Optimization failed: {e}")
