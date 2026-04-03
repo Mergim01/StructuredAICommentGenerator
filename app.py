@@ -149,65 +149,28 @@ def main():
     with st.sidebar:
         st.header("Configuration")
         
-        # LLM Selection
-        llm_provider = st.selectbox(
-            "LLM Provider",
-            ["Company Internal (Azure OpenAI)", "Google Gemini"],
-            index=0
-        )
-        
-        llm_config = {}
-        
-        if llm_provider == "Company Internal (Azure OpenAI)":
-            llm_config["provider"] = "azure"
-            llm_config["base_url"] = "https://api.competence-cente-cc-genai-prod.enbw-az.cloud/openai"
-            llm_config["api_version"] = "2024-10-21"
-            
-            # Model Selection
-            model_options = ["gpt-4.1", "gpt-5", "gpt-5-mini"]
-            selected_model = st.selectbox("Select Model", model_options, index=0)
-            llm_config["model_name"] = selected_model
-            
-            # API Key
-            # Check environment variable first (as requested by user), then secrets
-            api_key = os.environ.get("api_key")
-            if not api_key:
-                try:
-                    api_key = st.secrets["azure"]["api_key"]
-                except:
-                    pass
-            
-            if not api_key:
-                api_key = st.text_input("Enter Azure API Key", type="password")
-            
-            if not api_key:
-                st.warning("Please set `api_key` in .env or secrets.")
-                st.stop()
-            else:
-                llm_config["api_key"] = api_key
-                st.success("Azure API Key loaded.")
+        llm_config = {
+            "provider": "google",
+            "model_name": "gemini-2.0-flash"
+        }
 
-        else: # Google Gemini
-            llm_config["provider"] = "google"
-            llm_config["model_name"] = "gemini-2.0-flash"
-            
-            # Try to get key from env or secrets
-            api_key = os.environ.get("GOOGLE_API_KEY")
-            if not api_key:
-                try:
-                    api_key = st.secrets["google"]["api_key"]
-                except:
-                    pass
-            
-            if not api_key or api_key == "YOUR_GOOGLE_API_KEY_HERE":
-                api_key = st.text_input("Enter Google API Key", type="password")
-            
-            if not api_key:
-                st.warning("Please configure Google API Key.")
-                st.stop()
-            else:
-                llm_config["api_key"] = api_key
-                st.success("Google API Key loaded.")
+        # Try to get key from env or secrets
+        api_key = os.environ.get("GOOGLE_API_KEY")
+        if not api_key:
+            try:
+                api_key = st.secrets["google"]["api_key"]
+            except:
+                pass
+
+        if not api_key or api_key == "YOUR_GOOGLE_API_KEY_HERE":
+            api_key = st.text_input("Enter Google API Key", type="password")
+
+        if not api_key:
+            st.warning("Please configure Google API Key.")
+            st.stop()
+        else:
+            llm_config["api_key"] = api_key
+            st.success("Google API Key loaded.")
         
         st.divider()
         st.header("Settings")

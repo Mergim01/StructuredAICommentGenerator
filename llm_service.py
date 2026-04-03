@@ -2,15 +2,9 @@ import google.generativeai as genai
 import pandas as pd
 import re
 import traceback
-import os
-import openai
-from openai import AzureOpenAI
 
 # Default Constants
 DEFAULT_GOOGLE_MODEL = "gemini-2.0-flash"
-DEFAULT_AZURE_MODEL = "gpt-4.1" # Default company model
-AZURE_BASE_URL = "https://api.competence-cente-cc-genai-prod.enbw-az.cloud/openai"
-AZURE_API_VERSION = "2024-10-21"
 
 def get_dataframe_schema(df: pd.DataFrame) -> str:
     """
@@ -34,52 +28,28 @@ def clean_code_block(code: str) -> str:
 
 def call_llm(prompt: str, llm_config: dict) -> str:
     """
-    Unified function to call different LLM providers.
+    Calls Google Gemini API with the configured model.
     """
-    provider = llm_config.get("provider", "google")
     api_key = llm_config.get("api_key")
     model_name = llm_config.get("model_name")
-    
-    if provider == "azure":
-        if not api_key:
-             raise ValueError("API Key is missing for Azure provider.")
-             
-        client = openai.AzureOpenAI(
-            base_url=llm_config.get("base_url", AZURE_BASE_URL),
-            api_key=api_key,
-            api_version=llm_config.get("api_version", AZURE_API_VERSION)
-        )
-        try:
-            completion = client.chat.completions.create(
-                model=model_name or DEFAULT_AZURE_MODEL,
-                messages=[{"role": "user", "content": prompt}],
+
+    if not api_key:
+         raise ValueError("API Key is missing for Google provider.")
+
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel(model_name or DEFAULT_GOOGLE_MODEL)
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(
                 temperature=llm_config.get("temperature", 0.0)
             )
-            return completion.choices[0].message.content
-        except Exception as e:
-            raise RuntimeError(f"Error communicating with Azure OpenAI: {e}")
-
-    elif provider == "google":
-        if not api_key:
-             raise ValueError("API Key is missing for Google provider.")
-        
-        try:
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel(model_name or DEFAULT_GOOGLE_MODEL)
-            response = model.generate_content(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=llm_config.get("temperature", 0.0)
-                )
-            )
-            if not response.text:
-                raise RuntimeError("Empty response received from Gemini.")
-            return response.text
-        except Exception as e:
-             raise RuntimeError(f"Error communicating with Gemini API: {e}")
-        
-    else:
-        raise ValueError(f"Unknown provider: {provider}")
+        )
+        if not response.text:
+            raise RuntimeError("Empty response received from Gemini.")
+        return response.text
+    except Exception as e:
+         raise RuntimeError(f"Error communicating with Gemini API: {e}")
 
 def generate_transformation_code(schema_info: str, user_prompt: str, llm_config: dict, previous_code: str = None, error_feedback: str = None) -> str:
     """
@@ -89,7 +59,7 @@ def generate_transformation_code(schema_info: str, user_prompt: str, llm_config:
     Args:
         schema_info: String representation of the DataFrame schema.
         user_prompt: The user's instructions for transformation.
-        llm_config: Dictionary containing LLM configuration (provider, api_key, model_name).
+        llm_config: Dictionary containing LLM configuration (api_key, model_name).
         previous_code: The code that failed (optional).
         error_feedback: The error message from the previous attempt (optional).
         
